@@ -1,0 +1,191 @@
+test-2
+===============
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <Adafruit_Fingerprint.h>
+#include <SoftwareSerial.h>
+#include <AltSoftSerial.h>
+#include <EEPROM.h>
+
+// Khai báo LCD 16x2 với địa chỉ I2C 0x21
+LiquidCrystal_I2C lcd(0x21, 16, 2);
+
+// Khai báo cảm biến vân tay (TX -> A0, RX -> A1)
+SoftwareSerial fingerSerial(A0, A1);
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&fingerSerial);
+
+// Khai báo Bluetooth HC-05 (TX 10, RX 11) dùng AltSoftSerial
+AltSoftSerial BTSerial;
+
+// Cấu hình Keypad 4x4
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+    {'1', '2', '3', 'A'},
+    {'4', '5', '6', 'B'},
+    {'7', '8', '9', 'C'},
+    {'*', '0', '#', 'D'}
+};
+byte rowPins[ROWS] = {11, 10, 7, 6}; 
+byte colPins[COLS] = {5, 4, 3, 2}; 
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+// Chân Relay
+const int relayPin = A2;
+
+// Cảm biến SRF05
+const int trigPin = 12;
+const int echoPin = 13;
+
+// Chân còi báo động
+const int buzzerPin = A3;
+int wrongAttempts = 0; // Đếm số lần nhập sai
+
+// Địa chỉ EEPROM để lưu mật khẩu
+const int EEPROM_ADDR = 0;
+String inputPassword = "";
+
+// Hàm đọc mật khẩu từ EEPROM
+String readPasswordFromEEPROM() {
+    String password = "";
+    for (int i = 0; i < 4; i++) {
+        char c = EEPROM.read(EEPROM_ADDR + i);
+        if (c != 255) password += c;
+    }
+    return password;
+}
+
+// Hàm lưu mật khẩu vào EEPROM
+void savePasswordToEEPROM(String newPassword) {
+    for (int i = 0; i < 4; i++) {
+        EEPROM.write(EEPROM_ADDR + i, newPassword[i]);
+    }
+}
+
+// Hàm thay đổi mật khẩu
+void changePassword() {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Enter old pass:");
+    String oldPassword = "";
+    while (true) {
+        char key = keypad.getKey();
+        if (key) {
+            if (key == '#') {
+                if (oldPassword == readPasswordFromEEPROM()) {
+                    lcd.clear();
+                    lcd.setCursor(0, 0);
+                    lcd.print("Enter new pass:");
+                    String newPassword = "";
+                    while (true) {
+                        char newKey = keypad.getKey();
+                        if (newKey) {
+                            if (newKey == '#') {
+                                if (newPassword.length() == 4) {
+                                    savePasswordToEEPROM(newPassword);
+                                    lcd.clear();
+                                    lcd.setCursor(0, 0);
+                                    lcd.print("Password Saved");
+                                    delay(2000);
+                                    return;
+                                } else {
+                                    lcd.clear();
+                                    lcd.setCursor(0, 0);
+                                    lcd.print("Invalid Length");
+                                    delay(2000);
+                                    return;
+                                }
+                            } else if (newKey == '*') {
+                                return;
+                            } else {
+                                newPassword += newKey;
+                                lcd.setCursor(0, 1);
+                                lcd.print(newPassword);
+                            }
+                        }
+                    }
+                } else {
+                    lcd.clear();
+                    lcd.setCursor(0, 0);
+                    lcd.print("Wrong Password!");
+                    delay(2000);
+                    return;
+                }
+            } else if (key == '*') {
+                return;
+            } else {
+                oldPassword += key;
+                lcd.setCursor(0, 1);
+                lcd.print(oldPassword);
+            }
+        }
+    }
+}
+
+// Hàm kiểm tra mật khẩu
+void checkPassword() {
+    String correctPassword = readPasswordFromEEPROM();
+    if (inputPassword == correctPassword) {
+        unlockDoor();
+    } else {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Wrong Password!");
+        buzz(1);
+        wrongAttempts++;
+        if (wrongAttempts >= 3) {
+            buzz(3);
+        }
+        delay(2000);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Keypad or Finger");
+    }
+    inputPassword = "";
+}
+
+void setup() {
+    pinMode(relayPin, OUTPUT);
+    digitalWrite(relayPin, LOW);
+    pinMode(trigPin, OUTPUT);
+    pinMode(echoPin, INPUT);
+    pinMode(buzzerPin, OUTPUT);
+    digitalWrite(buzzerPin, LOW);
+    lcd.init();
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.print("Keypad or Finger");
+    Serial.begin(9600);
+    BTSerial.begin(9600);
+    fingerSerial.begin(57600);
+    if (finger.verifyPassword()) {
+        Serial.println("Fingerprint sensor OK!");
+    } else {
+        Serial.println("Fingerprint sensor NOT found!");
+        while (1);
+    }
+}
+
+void loop() {
+    updateLCDState();
+    char key = keypad.getKey();
+    if (key) {
+        if (key == '#') {
+            checkPassword();
+        } else if (key == '*') {
+            inputPassword = "";
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Keypad or Finger");
+        } else if (key == 'D') { // Nhấn 'D' để đổi mật khẩu
+            changePassword();
+        } else {
+            inputPassword += key;
+            lcd.setCursor(0, 1);
+            lcd.print(inputPassword);
+        }
+    }
+    checkFingerprint();
+    checkBluetooth();
+}
